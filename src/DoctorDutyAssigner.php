@@ -1,12 +1,12 @@
 <?php
 namespace AngelMillan\DoctorDutyAssigner;
 
+use App\Models\Auth\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
-use Illuminate\Support\Collection;
-use App\Models\DoctorShift;
-use App\Models\User;
-use Illuminate\Http\Request;
+use App\Models\ShiftManagement\DoctorShift;
 
 class DoctorDutyAssigner
 {
