@@ -1,17 +1,20 @@
 <?php
 namespace AngelMillan\DoctorDutyAssigner;
 
-use App\Models\Auth\User;
+
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
-use App\Models\ShiftManagement\DoctorShift;
+
 
 class DoctorDutyAssigner
 {
-    public static function assign(Request $request, int $tenant)
+    public static function assign(Request $request, int $tenant,string $doctorShiftModel = DoctorShift::class, string $userModel = User::class)
     {
+        $DoctorShift = new $doctorShiftModel;
+        $User = new $userModel;
+
         $data = Validator::make($request->all(), [
             'specialty_id' => 'required',
             'insurance_id' => 'nullable|integer',
@@ -22,7 +25,7 @@ class DoctorDutyAssigner
         $cancelledIds = collect($data['medicsCancel'] ?? []);
 
         // Turno de hoy
-        $doctorToday = DoctorShift::where('tenant_id', $tenant)
+        $doctorToday = $DoctorShift::where('tenant_id', $tenant)
             ->where('speciality_code', $data['specialty_id'])
             ->whereDate('date', $today)
             ->select([
@@ -43,19 +46,33 @@ class DoctorDutyAssigner
                 ->exists();
 
         if ($isValid) {
-            $user = User::where('id_usua', $doctorToday->Medico)->first();
-            $doctorToday->Celular = $user->tel ?? null;
+            // validamos, si es erp = 3, tiene diferente estructura en su tabla
+            if($tenant != 3){
+                $user = $User::where('id_usua', $doctorToday->Medico)->first();
+                $doctorToday->Celular = $user->tel ?? null;
 
-            return [
-                'success' => true,
-                'message' => 'Médico de guardia asignado.',
-                'doctor' => $doctorToday,
-                'assignment_type' => 'ROL'
-            ];
+                return [
+                    'success' => true,
+                    'message' => 'Médico de guardia asignado.',
+                    'doctor' => $doctorToday,
+                    'assignment_type' => 'ROL'
+                ];
+            }else{
+                $user = $User::where('Medico', $doctorToday->Medico)->first();
+                $doctorToday->Celular = $user->Celular ?? null;
+
+                return [
+                    'success' => true,
+                    'message' => 'Médico de guardia asignado.',
+                    'doctor' => $doctorToday,
+                    'assignment_type' => 'ROL'
+                ];
+            }
+            
         }
 
         // Plan B: siguiente turno
-        $allShifts = DoctorShift::where('tenant_id', $tenant)
+        $allShifts = $DoctorShift::where('tenant_id', $tenant)
             ->where('speciality_code', $data['specialty_id'])
             ->orderBy('date')
             ->select([
@@ -80,15 +97,27 @@ class DoctorDutyAssigner
         });
 
         if ($nextDoctor) {
-            $user = User::where('id_usua', $nextDoctor->Medico)->first();
-            $nextDoctor->Celular = $user->tel ?? null;
+            if($tenant != 3){
+                $user = $User::where('id_usua', $doctorToday->Medico)->first();
+                $doctorToday->Celular = $user->tel ?? null;
 
-            return [
-                'success' => true,
-                'message' => 'Se ha asignado Médico alterno.',
-                'doctor' => $nextDoctor,
-                'assignment_type' => 'ROL'
-            ];
+                return [
+                    'success' => true,
+                    'message' => 'Médico de guardia asignado.',
+                    'doctor' => $doctorToday,
+                    'assignment_type' => 'ROL'
+                ];
+            }else{
+                $user = $User::where('Medico', $doctorToday->Medico)->first();
+                $doctorToday->Celular = $user->Celular ?? null;
+
+                return [
+                    'success' => true,
+                    'message' => 'Médico de guardia asignado.',
+                    'doctor' => $doctorToday,
+                    'assignment_type' => 'ROL'
+                ];
+            }
         }
 
         return [
