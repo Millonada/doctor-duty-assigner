@@ -73,7 +73,7 @@ class DoctorDutyAssigner
 
         $isValid = $doctorToday &&
             !$cancelledIds->contains($doctorToday->Medico) &&
-            !DB::table('company_has_doctor')
+            !DB::table('sar_banned_insurance_doctors')
                 ->where('doctor_id', $doctorToday->Medico)
                 ->where('company_key', $data['insurance_id'])
                 ->exists();
@@ -101,7 +101,7 @@ class DoctorDutyAssigner
 
         $nextDoctor = $rotatedShifts->first(function ($shift) use ($cancelledIds, $data) {
             return !$cancelledIds->contains($shift->Medico) &&
-                !DB::table('company_has_doctor')
+                !DB::table('sar_banned_insurance_doctors')
                     ->where('doctor_id', $shift->Medico)
                     ->where('company_key', $data['insurance_id'])
                     ->exists();
