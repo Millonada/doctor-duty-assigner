@@ -10,7 +10,7 @@ use Illuminate\Http\Request;
 
 class DoctorDutyAssigner
 {
-    public static function assign(Request $request, int $tenant = 2)
+    public static function assign(Request $request, int $tenant)
     {
         $data = Validator::make($request->all(), [
             'specialty_id' => 'required',
