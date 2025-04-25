@@ -1,0 +1,24 @@
+{
+    "name": "angelmillan/doctor-duty-assigner",
+    "description": "Paquete para asignar doctores por guardias con lógica de fallback y validación.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+      {
+        "name": "Angel Millan",
+        "email": "an.mil.es@gmail.com"
+      }
+    ],
+    "require": {
+      "php": "^8.0",
+      "illuminate/support": "^9.0|^10.0|^11.0"
+    },
+    "autoload": {
+      "psr-4": {
+        "AngelMillan\\DoctorDutyAssigner\\": "src/"
+      }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+  }
+  
