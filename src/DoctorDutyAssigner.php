@@ -6,25 +6,58 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use AngelMillan\DoctorDutyAssigner\Services\SpecialistResolver;
 
 
 class DoctorDutyAssigner
 {
-    public static function assign(Request $request, int $tenant,string $doctorShiftModel = DoctorShift::class, string $userModel = User::class)
+    public static function assign(Request $request, array $config = [])
     {
+        $tenant = $config['tenant'] ?? 1;
+        $doctorShiftModel = $config['doctorShiftModel'] ?? DoctorShift::class;
+        $userModel = $config['userModel'] ?? User::class;
+        $redInsuranceKeys = $config['redInsuranceKeys'] ?? [];
+        $withDoctorField = $config['withDoctorField'] ?? 'medic_guard';
+        $withDoctorKeyField = $config['withDoctorKeyField'] ?? 'medic_guard_key';
+
         $DoctorShift = new $doctorShiftModel;
         $User = new $userModel;
 
         $data = Validator::make($request->all(), [
             'specialty_id' => 'required',
             'insurance_id' => 'nullable|integer',
+            'insurance_key' => 'nullable',
             'medicsCancel' => 'nullable|array',
+            $withDoctorField => 'nullable|string',
+            $withDoctorKeyField => 'nullable|string',
         ])->validate();
 
+        // Caso 1: Con Médico asignado
+        if (!empty($data[$withDoctorField]) && $data[$withDoctorField] !== '. . MEDICO URGENCIAS') {
+            $doctor = SpecialistResolver::getRecommendedSpecialist($data[$withDoctorKeyField],$User);
+            return [
+                'success' => true,
+                'message' => 'El paciente ya viene con médico asignado',
+                'doctor' => $doctor,
+                'assignment_type' => 'CM'
+            ];
+        }
+
+        // Caso 2: RED por aseguradora
+        if (in_array($data['insurance_key'] ?? '', $redInsuranceKeys)) {
+            $doctor = SpecialistResolver::getSpecialistsForCompany($data['specialty_id'],$User);
+            return [
+                'success' => true,
+                'message' => 'El paciente tiene seguro, se debe contactar a la aseguradora',
+                'doctor' => $doctor,
+                'assignment_type' => 'RED'
+            ];
+        }
+
+        // Caso 3: ROL
         $today = now()->format('Y-m-d');
         $cancelledIds = collect($data['medicsCancel'] ?? []);
 
-        // Turno de hoy
         $doctorToday = $DoctorShift::where('tenant_id', $tenant)
             ->where('speciality_code', $data['specialty_id'])
             ->whereDate('date', $today)
@@ -40,49 +73,27 @@ class DoctorDutyAssigner
 
         $isValid = $doctorToday &&
             !$cancelledIds->contains($doctorToday->Medico) &&
-            !DB::connection('tenant')->table('sar_company_has_doctor')
+            !DB::table('company_has_doctor')
                 ->where('doctor_id', $doctorToday->Medico)
                 ->where('company_key', $data['insurance_id'])
                 ->exists();
 
         if ($isValid) {
-            // validamos, si es erp = 3, tiene diferente estructura en su tabla
-            if($tenant != 3){
-                $user = $User::where('id_usua', $doctorToday->Medico)->first();
-                $doctorToday->Celular = $user->tel ?? null;
+            $user = self::getUserData($User, $doctorToday->Medico, $tenant);
+            $doctorToday->Celular = $user?->tel ?? $user?->Celular ?? null;
 
-                return [
-                    'success' => true,
-                    'message' => 'Médico de guardia asignado.',
-                    'doctor' => $doctorToday,
-                    'assignment_type' => 'ROL'
-                ];
-            }else{
-                $user = $User::where('Medico', $doctorToday->Medico)->first();
-                $doctorToday->Celular = $user->Celular ?? null;
-
-                return [
-                    'success' => true,
-                    'message' => 'Médico de guardia asignado.',
-                    'doctor' => $doctorToday,
-                    'assignment_type' => 'ROL'
-                ];
-            }
-            
+            return [
+                'success' => true,
+                'message' => 'Médico de guardia asignado.',
+                'doctor' => $doctorToday,
+                'assignment_type' => 'ROL'
+            ];
         }
 
-        // Plan B: siguiente turno
+        // Siguiente turno (rotación)
         $allShifts = $DoctorShift::where('tenant_id', $tenant)
             ->where('speciality_code', $data['specialty_id'])
             ->orderBy('date')
-            ->select([
-                'doctor_phone as Celular',
-                'doctor_id as Medico',
-                'doctor_name as NombreMedico',
-                'speciality_name as desc_esp',
-                'date',
-                'doctor_id'
-            ])
             ->get();
 
         $indexToday = $allShifts->search(fn($shift) => $shift->date === $today);
@@ -90,39 +101,36 @@ class DoctorDutyAssigner
 
         $nextDoctor = $rotatedShifts->first(function ($shift) use ($cancelledIds, $data) {
             return !$cancelledIds->contains($shift->Medico) &&
-                !DB::table('sar_company_has_doctor')
+                !DB::table('company_has_doctor')
                     ->where('doctor_id', $shift->Medico)
                     ->where('company_key', $data['insurance_id'])
                     ->exists();
         });
 
         if ($nextDoctor) {
-            if($tenant != 3){
-                $user = $User::where('id_usua', $doctorToday->Medico)->first();
-                $doctorToday->Celular = $user->tel ?? null;
+            $user = self::getUserData($User, $nextDoctor->Medico, $tenant);
+            $nextDoctor->Celular = $user?->tel ?? $user?->Celular ?? null;
 
-                return [
-                    'success' => true,
-                    'message' => 'Médico de guardia asignado.',
-                    'doctor' => $doctorToday,
-                    'assignment_type' => 'ROL'
-                ];
-            }else{
-                $user = $User::where('Medico', $doctorToday->Medico)->first();
-                $doctorToday->Celular = $user->Celular ?? null;
-
-                return [
-                    'success' => true,
-                    'message' => 'Médico de guardia asignado.',
-                    'doctor' => $doctorToday,
-                    'assignment_type' => 'ROL'
-                ];
-            }
+            return [
+                'success' => true,
+                'message' => 'Médico de guardia asignado.',
+                'doctor' => $nextDoctor,
+                'assignment_type' => 'ROL'
+            ];
         }
 
         return [
             'error' => true,
             'message' => 'No hay médicos disponibles para esta especialidad.'
         ];
+    }
+
+    protected static function getUserData($UserModel, $doctorId, $tenant)
+    {
+        if ($tenant == 3) {
+            return $UserModel::where('Medico', $doctorId)->first();
+        }
+
+        return $UserModel::where('id_usua', $doctorId)->first();
     }
 }
