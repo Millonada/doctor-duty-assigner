@@ -63,24 +63,27 @@ class DoctorDutyAssigner
             ->whereDate('date', $today)
             ->select([
                 'doctor_phone as Celular',
-                'doctor_id as Medico',
+                'doctor_id as Medico', // temporalmente sera el codigo del medico
                 'doctor_name as NombreMedico',
                 'speciality_name as desc_esp',
                 'date',
-                'doctor_id'
+                'doctor_code as medicoId' // temporalmente sera el id 
             ])
             ->first();
-
+           
+            $user = self::getUserData($User, $doctorToday->Medico, $tenant);
+            $doctorToday->Celular = $user?->tel ?? $user?->Celular ?? null;
+            $doctorToday->medicoId = $user?->id_usua ?? $user?->id ?? null;
+            
         $isValid = $doctorToday &&
             !$cancelledIds->contains($doctorToday->Medico) &&
             !DB::table('sar_banned_insurance_doctors')
-                ->where('doctor_id', $doctorToday->id)
+                ->where('doctor_id', $doctorToday->medicoId)
                 ->where('company_key', $data['insurance_id'])
                 ->exists();
 
         if ($isValid) {
-            $user = self::getUserData($User, $doctorToday->Medico, $tenant);
-            $doctorToday->Celular = $user?->tel ?? $user?->Celular ?? null;
+        
 
             return [
                 'success' => true,
@@ -93,12 +96,21 @@ class DoctorDutyAssigner
         // Siguiente turno (rotación)
         $allShifts = $DoctorShift::where('tenant_id', $tenant)
             ->where('speciality_code', $data['specialty_id'])
+            ->select([
+                'doctor_phone as Celular',
+                'doctor_id as Medico', // temporalmente sera el codigo del medico
+                'doctor_name as NombreMedico',
+                'speciality_name as desc_esp',
+                'date',
+                'doctor_code as medicoId' // temporalmente sera el id 
+            ])
             ->orderBy('date')
             ->get();
 
         $indexToday = $allShifts->search(fn($shift) => $shift->date === $today);
         $rotatedShifts = $allShifts->slice($indexToday + 1)->concat($allShifts->slice(0, $indexToday + 1));
 
+        
         $nextDoctor = $rotatedShifts->first(function ($shift) use ($cancelledIds, $data) {
             return !$cancelledIds->contains($shift->Medico) &&
                 !DB::table('sar_banned_insurance_doctors')
@@ -107,9 +119,12 @@ class DoctorDutyAssigner
                     ->exists();
         });
 
+        
+
         if ($nextDoctor) {
             $user = self::getUserData($User, $nextDoctor->Medico, $tenant);
             $nextDoctor->Celular = $user?->tel ?? $user?->Celular ?? null;
+            $nextDoctor->medicoId = $user?->id_usua ?? $user?->id ?? null;
 
             return [
                 'success' => true,
@@ -124,7 +139,6 @@ class DoctorDutyAssigner
             'message' => 'No hay médicos disponibles para esta especialidad.'
         ];
     }
-
     protected static function getUserData($UserModel, $doctorId, $tenant)
     {
         if ($tenant == 3) {
