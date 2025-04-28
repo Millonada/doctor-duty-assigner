@@ -44,8 +44,8 @@ class DoctorDutyAssigner
         }
 
         // Caso 2: RED por aseguradora
-        if (in_array($data['insurance_key'] ?? '', $redInsuranceKeys)) {
-            $doctor = SpecialistResolver::getSpecialistsForCompany($data['specialty_id'],$User);
+        if (in_array($data['insurance_key'] ?? $data['insurance_id'], $redInsuranceKeys)) {
+            $doctor = SpecialistResolver::getSpecialistsForCompany($data['specialty_id'],$User,$tenant);
             return [
                 'success' => true,
                 'message' => 'El paciente tiene seguro, se debe contactar a la aseguradora',
