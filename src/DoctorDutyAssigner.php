@@ -58,6 +58,7 @@ class DoctorDutyAssigner
         $today = now()->format('Y-m-d');
         $cancelledIds = collect($data['medicsCancel'] ?? []);
 
+        // se busca al doctor de guardia
         $doctorToday = $DoctorShift::where('tenant_id', $tenant)
             ->where('speciality_code', $data['specialty_id'])
             ->whereDate('date', $today)
@@ -70,11 +71,12 @@ class DoctorDutyAssigner
                 'doctor_code as medicoId' // temporalmente sera el id 
             ])
             ->first();
-           
+           // se obtienen los datos que faltan, esto se debe correguir
             $user = self::getUserData($User, $doctorToday->Medico, $tenant);
             $doctorToday->Celular = $user?->tel ?? $user?->Celular ?? null;
             $doctorToday->medicoId = $user?->id_usua ?? $user?->id ?? null;
             
+            // esta funcion valida si el medico del dia esta vetado del seguro
         $isValid = $doctorToday &&
             !$cancelledIds->contains($doctorToday->Medico) &&
             !DB::table('sar_banned_insurance_doctors')
@@ -83,7 +85,7 @@ class DoctorDutyAssigner
                 ->exists();
 
         if ($isValid) {
-        
+        // si no esta vetado se retorna
 
             return [
                 'success' => true,
@@ -93,6 +95,7 @@ class DoctorDutyAssigner
             ];
         }
 
+        // si el medico esta vetado se obtienen todos los turnos de esa especialidad
         // Siguiente turno (rotación)
         $allShifts = $DoctorShift::where('tenant_id', $tenant)
             ->where('speciality_code', $data['specialty_id'])
@@ -110,11 +113,13 @@ class DoctorDutyAssigner
         $indexToday = $allShifts->search(fn($shift) => $shift->date === $today);
         $rotatedShifts = $allShifts->slice($indexToday + 1)->concat($allShifts->slice(0, $indexToday + 1));
 
-        
-        $nextDoctor = $rotatedShifts->first(function ($shift) use ($cancelledIds, $data) {
+        // se obtiene el siguiente en turno
+        $nextDoctor = $rotatedShifts->first(function ($shift) use ($cancelledIds, $data,$User,$tenant) {
+            $user = self::getUserData($User, $shift->Medico, $tenant);
+            $medId = $user?->id_usua ?? $user?->id ?? null;
             return !$cancelledIds->contains($shift->Medico) &&
                 !DB::table('sar_banned_insurance_doctors')
-                    ->where('doctor_id', $shift->id)
+                    ->where('doctor_id', $medId)
                     ->where('company_key', $data['insurance_id'])
                     ->exists();
         });

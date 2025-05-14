@@ -1,12 +1,12 @@
 {
-    "name": "angelmillan/doctor-duty-assigner",
-    "description": "Paquete para asignar doctores por guardias con lógica de fallback y validación.",
+    "name": "clinic-tools/doctor-duty-assigner",
+    "description": "Package to assign doctors to shifts with fallback logic and validation.",
     "type": "library",
     "license": "MIT",
     "authors": [
       {
-        "name": "Angel Millan",
-        "email": "an.mil.es@gmail.com"
+        "name": "Clinic Tools",
+        "email": "support@clinictools.io"
       }
     ],
     "require": {
@@ -15,7 +15,7 @@
     },
     "autoload": {
       "psr-4": {
-        "AngelMillan\\DoctorDutyAssigner\\": "src/"
+        "ClinicTools\\DoctorDutyAssigner\\": "src/"
       }
     },
     "minimum-stability": "dev",
