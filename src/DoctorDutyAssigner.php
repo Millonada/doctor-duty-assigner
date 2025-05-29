@@ -62,6 +62,7 @@ class DoctorDutyAssigner
         $doctorToday = $DoctorShift::where('tenant_id', $tenant)
             ->where('speciality_code', $data['specialty_id'])
             ->whereDate('date', $today)
+            ->where('is_substitute', false)
             ->select([
                 'doctor_phone as Celular',
                 'doctor_id as Medico', // temporalmente sera el codigo del medico
@@ -99,6 +100,7 @@ class DoctorDutyAssigner
         // Siguiente turno (rotación)
         $allShifts = $DoctorShift::where('tenant_id', $tenant)
             ->where('speciality_code', $data['specialty_id'])
+            ->where('is_substitute', false)
             ->select([
                 'doctor_phone as Celular',
                 'doctor_id as Medico', // temporalmente sera el codigo del medico
