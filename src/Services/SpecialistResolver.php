@@ -47,7 +47,7 @@ class SpecialistResolver
         return $user::select([
             'id_usua as id',
             'id_usua as Medico',
-            DB::raw("rtrim(nombre) + ' ' + rtrim(papell) + ' ' + rtrim(sapell) as NombreMedico"),
+            DB::raw("rtrim(nombre_usua) + ' ' + rtrim(papell_usua) + ' ' + rtrim(sapell_usua) as NombreMedico"),
             'espe.id_espec as desc_esp',
             // 'papell AS NombreMedico',
             'tel AS Celular',
