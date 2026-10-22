@@ -15,7 +15,7 @@
     },
     "autoload": {
       "psr-4": {
-        "ClinicTools\\DoctorDutyAssigner\\": "src/"
+        "AngelMillan\\DoctorDutyAssigner\\": "src/"
       }
     },
     "minimum-stability": "dev",

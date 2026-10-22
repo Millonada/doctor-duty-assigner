@@ -2,6 +2,7 @@
 namespace AngelMillan\DoctorDutyAssigner;
 
 
+use InvalidArgumentException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -11,14 +12,34 @@ use AngelMillan\DoctorDutyAssigner\Services\SpecialistResolver;
 
 class DoctorDutyAssigner
 {
+    // Rol del médico sugerido por el calendario (ROL)
+    const ROLE_TITULAR = 'TITULAR';     // titular de la guardia de hoy
+    const ROLE_SUPLENTE = 'SUPLENTE';   // suplente de la guardia de hoy
+    const ROLE_SIGUIENTE = 'SIGUIENTE'; // titular de la siguiente guardia del calendario
+    const ROLE_LIBRE = 'LIBRE';         // nadie disponible en el calendario: el personal elige
+
+    const SHIFT_COLUMNS = [
+        'id',
+        'doctor_phone as Celular',
+        'doctor_id as Medico', // temporalmente sera el codigo del medico
+        'doctor_name as NombreMedico',
+        'speciality_name as desc_esp',
+        'date',
+        'doctor_code as medicoId', // temporalmente sera el id
+    ];
+
     public static function assign(Request $request, array $config = [])
     {
         $tenant = $config['tenant'] ?? 1;
-        $doctorShiftModel = $config['doctorShiftModel'] ?? DoctorShift::class;
-        $userModel = $config['userModel'] ?? User::class;
+        $doctorShiftModel = $config['doctorShiftModel'] ?? null;
+        $userModel = $config['userModel'] ?? null;
         $redInsuranceKeys = $config['redInsuranceKeys'] ?? [];
         $withDoctorField = $config['withDoctorField'] ?? 'medic_guard';
         $withDoctorKeyField = $config['withDoctorKeyField'] ?? 'medic_guard_key';
+
+        if (!$doctorShiftModel || !$userModel) {
+            throw new InvalidArgumentException('Se deben configurar doctorShiftModel y userModel.');
+        }
 
         $DoctorShift = new $doctorShiftModel;
         $User = new $userModel;
@@ -44,7 +65,7 @@ class DoctorDutyAssigner
         }
 
         // Caso 2: RED por aseguradora
-        if (in_array($data['insurance_key'] ?? $data['insurance_id'], $redInsuranceKeys)) {
+        if (in_array($data['insurance_key'] ?? $data['insurance_id'] ?? null, $redInsuranceKeys)) {
             $doctor = SpecialistResolver::getSpecialistsForCompany($data['specialty_id'],$User,$tenant);
             return [
                 'success' => true,
@@ -55,97 +76,136 @@ class DoctorDutyAssigner
         }
 
         // Caso 3: ROL
-        $today = now()->format('Y-m-d');
-        $cancelledIds = collect($data['medicsCancel'] ?? []);
+        // medicsCancel son los médicos que ya cancelaron o no llegaron con este paciente
+        $cancelledIds = collect($data['medicsCancel'] ?? [])->filter()->map(fn ($id) => (string) $id);
+        $insuranceId = $data['insurance_id'] ?? null;
 
-        // se busca al doctor de guardia
-        $doctorToday = $DoctorShift::where('tenant_id', $tenant)
-            ->where('speciality_code', $data['specialty_id'])
-            ->whereDate('date', $today)
-            ->where('is_substitute', false)
-            ->select([
-                'doctor_phone as Celular',
-                'doctor_id as Medico', // temporalmente sera el codigo del medico
-                'doctor_name as NombreMedico',
-                'speciality_name as desc_esp',
-                'date',
-                'doctor_code as medicoId' // temporalmente sera el id 
-            ])
-            ->first();
-           // se obtienen los datos que faltan, esto se debe correguir
-            $user = self::getUserData($User, $doctorToday->Medico, $tenant);
-            $doctorToday->Celular = $user?->tel ?? $user?->Celular ?? null;
-            $doctorToday->medicoId = $user?->id_usua ?? $user?->id ?? null;
-            
-            // esta funcion valida si el medico del dia esta vetado del seguro
-        $isValid = $doctorToday &&
-            !$cancelledIds->contains($doctorToday->Medico) &&
-            !DB::table('sar_banned_insurance_doctors')
-                ->where('doctor_id', $doctorToday->medicoId)
-                ->where('company_key', $data['insurance_id'])
-                ->exists();
+        // Orden: titular de hoy -> suplente de esa guardia -> titulares de las siguientes guardias
+        $candidates = self::dutyCandidates($DoctorShift, $tenant, $data['specialty_id'], now()->format('Y-m-d'));
 
-        if ($isValid) {
-        // si no esta vetado se retorna
+        foreach ($candidates as [$shift, $role]) {
+            $user = self::getUserData($User, $shift->Medico, $tenant);
+            $medId = $user?->id_usua ?? $user?->id ?? null;
+
+            if (self::isCancelled($cancelledIds, $shift->Medico, $medId) || self::isBanned($medId, $insuranceId)) {
+                continue;
+            }
+
+            // se obtienen los datos que faltan, esto se debe correguir
+            $shift->Celular = $user?->tel ?? $user?->Celular ?? $shift->Celular;
+            $shift->medicoId = $medId;
 
             return [
                 'success' => true,
-                'message' => 'Médico de guardia asignado.',
-                'doctor' => $doctorToday,
-                'assignment_type' => 'ROL'
+                'message' => self::roleMessage($role),
+                'doctor' => $shift,
+                'assignment_type' => 'ROL',
+                'assignment_role' => $role,
             ];
         }
 
-        // si el medico esta vetado se obtienen todos los turnos de esa especialidad
-        // Siguiente turno (rotación)
-        $allShifts = $DoctorShift::where('tenant_id', $tenant)
-            ->where('speciality_code', $data['specialty_id'])
-            ->where('is_substitute', false)
-            ->select([
-                'doctor_phone as Celular',
-                'doctor_id as Medico', // temporalmente sera el codigo del medico
-                'doctor_name as NombreMedico',
-                'speciality_name as desc_esp',
-                'date',
-                'doctor_code as medicoId' // temporalmente sera el id 
-            ])
-            ->orderBy('date')
-            ->get();
+        // Nadie disponible en el calendario: el personal elige a cualquier especialista de la especialidad
+        $doctors = SpecialistResolver::getSpecialistsForCompany($data['specialty_id'], $User, $tenant)
+            ->reject(fn ($doctor) => self::isCancelled($cancelledIds, $doctor->Medico, $doctor->id)
+                || self::isBanned($doctor->id, $insuranceId))
+            ->each(function ($doctor) {
+                // sima trae el código en desc_esp y el nombre en espec; assist solo trae desc_esp
+                $doctor->desc_esp = $doctor->espec ?? $doctor->desc_esp;
+                $doctor->espec = $doctor->desc_esp;
+            })
+            ->values();
 
-        $indexToday = $allShifts->search(fn($shift) => $shift->date === $today);
-        $rotatedShifts = $allShifts->slice($indexToday + 1)->concat($allShifts->slice(0, $indexToday + 1));
-
-        // se obtiene el siguiente en turno
-        $nextDoctor = $rotatedShifts->first(function ($shift) use ($cancelledIds, $data,$User,$tenant) {
-            $user = self::getUserData($User, $shift->Medico, $tenant);
-            $medId = $user?->id_usua ?? $user?->id ?? null;
-            return !$cancelledIds->contains($shift->Medico) &&
-                !DB::table('sar_banned_insurance_doctors')
-                    ->where('doctor_id', $medId)
-                    ->where('company_key', $data['insurance_id'])
-                    ->exists();
-        });
-
-        
-
-        if ($nextDoctor) {
-            $user = self::getUserData($User, $nextDoctor->Medico, $tenant);
-            $nextDoctor->Celular = $user?->tel ?? $user?->Celular ?? null;
-            $nextDoctor->medicoId = $user?->id_usua ?? $user?->id ?? null;
-
+        if ($doctors->isEmpty()) {
             return [
-                'success' => true,
-                'message' => 'Médico de guardia asignado.',
-                'doctor' => $nextDoctor,
-                'assignment_type' => 'ROL'
+                'error' => true,
+                'message' => 'No hay médicos disponibles para esta especialidad.'
             ];
         }
 
         return [
-            'error' => true,
-            'message' => 'No hay médicos disponibles para esta especialidad.'
+            'success' => true,
+            'message' => 'No hay médico de guardia disponible; seleccione un especialista.',
+            'doctor' => $doctors,
+            'assignment_type' => 'ROL',
+            'assignment_role' => self::ROLE_LIBRE,
+            'free_selection' => true,
         ];
     }
+
+    /**
+     * Guardias candidatas en orden de prioridad, como pares [guardia, rol].
+     * El suplente se vincula a su titular por substitute_for_id; las siguientes guardias
+     * son solo fechas futuras (no se regresa a guardias pasadas).
+     */
+    protected static function dutyCandidates($DoctorShift, $tenant, $specialtyId, string $today): Collection
+    {
+        $base = fn () => $DoctorShift::where('tenant_id', $tenant)
+            ->where('speciality_code', $specialtyId)
+            ->select(self::SHIFT_COLUMNS);
+
+        $candidates = collect();
+
+        $titular = $base()
+            ->whereDate('date', $today)
+            ->where('is_substitute', false)
+            ->orderBy('id')
+            ->first();
+
+        if ($titular) {
+            $candidates->push([$titular, self::ROLE_TITULAR]);
+
+            $suplente = $base()
+                ->whereDate('date', $today)
+                ->where('is_substitute', true)
+                ->where('substitute_for_id', $titular->id)
+                ->orderBy('id')
+                ->first();
+
+            if ($suplente) {
+                $candidates->push([$suplente, self::ROLE_SUPLENTE]);
+            }
+        }
+
+        $base()
+            ->whereDate('date', '>', $today)
+            ->where('is_substitute', false)
+            ->orderBy('date')
+            ->orderBy('id')
+            ->get()
+            ->each(fn ($shift) => $candidates->push([$shift, self::ROLE_SIGUIENTE]));
+
+        return $candidates;
+    }
+
+    // Se compara contra la clave del calendario y contra el id de usuario: según el hospital puede venir cualquiera
+    protected static function isCancelled(Collection $cancelledIds, $doctorKey, $userId): bool
+    {
+        return ($doctorKey !== null && $cancelledIds->contains((string) $doctorKey))
+            || ($userId !== null && $cancelledIds->contains((string) $userId));
+    }
+
+    // valida si el medico esta vetado del seguro
+    protected static function isBanned($userId, $insuranceId): bool
+    {
+        if ($userId === null || $insuranceId === null) {
+            return false;
+        }
+
+        return DB::table('sar_banned_insurance_doctors')
+            ->where('doctor_id', $userId)
+            ->where('company_key', $insuranceId)
+            ->exists();
+    }
+
+    protected static function roleMessage(string $role): string
+    {
+        return match ($role) {
+            self::ROLE_SUPLENTE => 'El titular de la guardia no está disponible; se asigna al suplente.',
+            self::ROLE_SIGUIENTE => 'Se asigna al siguiente médico del calendario.',
+            default => 'Médico de guardia asignado.',
+        };
+    }
+
     protected static function getUserData($UserModel, $doctorId, $tenant)
     {
         if ($tenant == 3) {
